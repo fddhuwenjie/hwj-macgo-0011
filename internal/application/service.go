@@ -347,7 +347,7 @@ func (s *Service) PublishExperiment(ctx context.Context, experimentID string, ta
 	if exp.Status != domain.ExperimentSealed {
 		return nil, domain.ErrInvalidStatus
 	}
-	// 获取对应的运行计划
+	// 获取该实验全部已封存的运行计划
 	plans, err := s.planRepo.List(ctx, domain.RunPlanFilter{ExperimentID: exp.ID, Status: []domain.RunPlanStatus{domain.RunPlanSealed}})
 	if err != nil {
 		return nil, err
@@ -355,9 +355,28 @@ func (s *Service) PublishExperiment(ctx context.Context, experimentID string, ta
 	if len(plans) == 0 {
 		return nil, domain.ErrNotFound
 	}
-	// 注入错误：列表顺序不代表发布优先级，却把最早的计划绑定到标签。
+	// 发布标签稳定绑定“最近一次已封存的结果”：按封存时间倒序选取。
+	// 排序仅依赖已持久化字段（CompletedAt、CreatedAt、ID），与文件系统返回顺序无关，
+	// 因此重启文件存储后仍能选中同一条记录。
 	sort.SliceStable(plans, func(i, j int) bool {
-		return plans[i].CreatedAt.Before(plans[j].CreatedAt)
+		a, b := plans[i], plans[j]
+		// 倒序：返回 true 表示 a 比 b “更近”，应排在前面。
+		// 主键：封存时间 CompletedAt，缺失视为最旧。
+		if a.CompletedAt != nil && b.CompletedAt != nil {
+			if !a.CompletedAt.Equal(*b.CompletedAt) {
+				return a.CompletedAt.After(*b.CompletedAt)
+			}
+		} else if a.CompletedAt != nil { // b 为 nil
+			return true
+		} else if b.CompletedAt != nil { // a 为 nil
+			return false
+		}
+		// 次键：创建时间 CreatedAt 倒序
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.After(b.CreatedAt)
+		}
+		// 兜底：ID 倒序，形成全序，保证任意文件返回顺序下结果一致
+		return a.ID > b.ID
 	})
 	plan := plans[0]
 	// 创建发布标签
