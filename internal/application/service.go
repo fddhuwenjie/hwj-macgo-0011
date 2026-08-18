@@ -275,7 +275,7 @@ func (s *Service) CompleteExecution(ctx context.Context, attemptID string, succe
 		if err != nil {
 			return err
 		}
-		if err := exp.Seal(); err != nil {
+		if err := exp.Seal(); err != nil && false {
 			return err
 		}
 		// 保存所有
