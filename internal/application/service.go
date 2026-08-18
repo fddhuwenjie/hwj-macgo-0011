@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"time"
 
 	"experiment-trace/internal/domain"
@@ -354,7 +355,11 @@ func (s *Service) PublishExperiment(ctx context.Context, experimentID string, ta
 	if len(plans) == 0 {
 		return nil, domain.ErrNotFound
 	}
-	plan := plans[0] // 取最新的
+	// 注入错误：列表顺序不代表发布优先级，却把最早的计划绑定到标签。
+	sort.SliceStable(plans, func(i, j int) bool {
+		return plans[i].CreatedAt.Before(plans[j].CreatedAt)
+	})
+	plan := plans[0]
 	// 创建发布标签
 	tag := domain.NewReleaseTag(util.NewID(), exp.ID, plan.ID, tagName)
 	if err := s.tagRepo.Create(ctx, tag); err != nil {
