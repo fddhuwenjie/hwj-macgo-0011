@@ -117,7 +117,7 @@ func TestFailureRetryAndRecovery(t *testing.T) {
 	_, _, _ = svc.ClaimNextRunPlan(ctx, "worker1")
 	attempts, _ := svc.AttemptRepo().ListByRunPlan(ctx, plan.ID)
 	attempt := attempts[0]
-	// 失败第一次
+	// 失败第一次：计划应进入 retry_wait
 	if err := svc.CompleteExecution(ctx, attempt.ID, false, nil, "error1"); err != nil {
 		t.Fatal(err)
 	}
@@ -125,9 +125,17 @@ func TestFailureRetryAndRecovery(t *testing.T) {
 	if updatedPlan.Status != domain.RunPlanRetryWait {
 		t.Fatalf("expected retry_wait, got %s", updatedPlan.Status)
 	}
-	// 再次排队
-	_ = svc.QueueRunPlan(ctx, plan.ID)
-	_, _, _ = svc.ClaimNextRunPlan(ctx, "worker1")
+	// 再次排队：retry_wait 应能回到 queued，否则调度永远领取不到
+	if err := svc.QueueRunPlan(ctx, plan.ID); err != nil {
+		t.Fatalf("requeue from retry_wait should succeed: %v", err)
+	}
+	if got, _ := svc.PlanRepo().Get(ctx, plan.ID); got.Status != domain.RunPlanQueued {
+		t.Fatalf("expected queued after requeue, got %s", got.Status)
+	}
+	// 重新领取并执行成功
+	if _, _, err := svc.ClaimNextRunPlan(ctx, "worker1"); err != nil {
+		t.Fatalf("reclaim after requeue should succeed: %v", err)
+	}
 	attempts, _ = svc.AttemptRepo().ListByRunPlan(ctx, plan.ID)
 	attempt = attempts[len(attempts)-1]
 	// 成功
@@ -137,6 +145,70 @@ func TestFailureRetryAndRecovery(t *testing.T) {
 	updatedPlan, _ = svc.PlanRepo().Get(ctx, plan.ID)
 	if updatedPlan.Status != domain.RunPlanSealed {
 		t.Fatalf("expected sealed, got %s", updatedPlan.Status)
+	}
+}
+
+// drainRetries 反复失败直到计划耗尽重试次数进入 failed 终态。
+func drainRetries(t *testing.T, svc *application.Service, ctx context.Context, planID string) {
+	t.Helper()
+	for {
+		plan, _ := svc.PlanRepo().Get(ctx, planID)
+		if plan.Status == domain.RunPlanFailed {
+			return
+		}
+		if plan.Status != domain.RunPlanQueued && plan.Status != domain.RunPlanRetryWait {
+			t.Fatalf("unexpected plan status %s while draining retries", plan.Status)
+		}
+		// retry_wait 需先回到 queued 才能被领取
+		if plan.Status == domain.RunPlanRetryWait {
+			if err := svc.QueueRunPlan(ctx, planID); err != nil {
+				t.Fatalf("requeue during drain should succeed: %v", err)
+			}
+		}
+		if _, _, err := svc.ClaimNextRunPlan(ctx, "worker1"); err != nil {
+			t.Fatalf("claim during drain should succeed: %v", err)
+		}
+		attempts, _ := svc.AttemptRepo().ListByRunPlan(ctx, planID)
+		if err := svc.CompleteExecution(ctx, attempts[len(attempts)-1].ID, false, nil, "boom"); err != nil {
+			t.Fatalf("fail during drain should succeed: %v", err)
+		}
+	}
+}
+
+// TestNonRetryableStatesRejectedFromQueue 验证终态（不可重试）计划无法被重新排队，
+// 而 retry_wait（可重试）可以正常回到队列。
+func TestNonRetryableStatesRejectedFromQueue(t *testing.T) {
+	svc, cleanup := setupService(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	exp, _ := svc.CreateExperiment(ctx, "terminal", "desc", []byte(`{}`), []byte(`{}`), nil)
+	plan, _ := svc.FreezeExperiment(ctx, exp.ID)
+	_ = svc.QueueRunPlan(ctx, plan.ID)
+	_, _, _ = svc.ClaimNextRunPlan(ctx, "worker1")
+	attempts, _ := svc.AttemptRepo().ListByRunPlan(ctx, plan.ID)
+
+	// 成功封存后，sealed 计划不可重新排队
+	if err := svc.CompleteExecution(ctx, attempts[0].ID, true, []byte(`{"out":1}`), ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.PlanRepo().Get(ctx, plan.ID); got.Status != domain.RunPlanSealed {
+		t.Fatalf("expected sealed, got %s", got.Status)
+	}
+	if err := svc.QueueRunPlan(ctx, plan.ID); err == nil {
+		t.Fatal("requeue of sealed plan should be rejected")
+	}
+
+	// 另一个计划：耗尽重试进入 failed，failed 计划同样不可重新排队
+	exp2, _ := svc.CreateExperiment(ctx, "failed", "desc", []byte(`{}`), []byte(`{}`), nil)
+	plan2, _ := svc.FreezeExperiment(ctx, exp2.ID)
+	_ = svc.QueueRunPlan(ctx, plan2.ID)
+	drainRetries(t, svc, ctx, plan2.ID)
+	if got, _ := svc.PlanRepo().Get(ctx, plan2.ID); got.Status != domain.RunPlanFailed {
+		t.Fatalf("expected failed, got %s", got.Status)
+	}
+	if err := svc.QueueRunPlan(ctx, plan2.ID); err == nil {
+		t.Fatal("requeue of failed plan should be rejected")
 	}
 }
 

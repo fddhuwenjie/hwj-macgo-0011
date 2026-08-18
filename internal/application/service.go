@@ -157,7 +157,10 @@ func (s *Service) FreezeExperiment(ctx context.Context, experimentID string) (*d
 	return plan, nil
 }
 
-// QueueRunPlan 将运行计划排队
+// QueueRunPlan 将运行计划排队。支持首次排队（frozen → queued）与
+// 重试后重新排队（retry_wait → queued）。首次排队时同步将实验从 frozen 推进到
+// queued，这样 ClaimNextRunPlan 才能将其标记为 running，最终 exp.Seal 才会成立。
+// 重试重新排队时实验已处于 running，保持不变。
 func (s *Service) QueueRunPlan(ctx context.Context, planID string) error {
 	plan, err := s.planRepo.Get(ctx, planID)
 	if err != nil {
@@ -170,7 +173,7 @@ func (s *Service) QueueRunPlan(ctx context.Context, planID string) error {
 	if err != nil {
 		return err
 	}
-	if false && exp.Status == domain.ExperimentFrozen {
+	if exp.Status == domain.ExperimentFrozen {
 		if err := exp.Queue(); err != nil {
 			return err
 		}

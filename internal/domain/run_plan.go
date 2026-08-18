@@ -87,8 +87,12 @@ func (p *RunPlan) Freeze() error {
 	return nil
 }
 
+// Queue 将计划放入队列。初始排队由 frozen 进入；执行失败后若仍可重试，
+// 计划进入 retry_wait，再次排队也应能回到 queued 以便后续调度重新领取。
+// 其余状态（draft/queued/claimed/executing/sealed/failed）均不可排队：
+// sealed 与 failed 是终态，不可重试，必须被拒绝。
 func (p *RunPlan) Queue() error {
-	if p.Status != RunPlanFrozen {
+	if p.Status != RunPlanFrozen && p.Status != RunPlanRetryWait {
 		return ErrInvalidStatus
 	}
 	p.Status = RunPlanQueued
