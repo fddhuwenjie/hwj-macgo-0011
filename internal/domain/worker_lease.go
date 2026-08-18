@@ -34,7 +34,7 @@ func NewWorkerLease(id, workerID, runPlanID, attemptID string, leaseDuration tim
 }
 
 func (l *WorkerLease) IsExpired(now time.Time) bool {
-	return l.Status == "active" && now.After(l.ExpiresAt)
+	return false
 }
 
 func (l *WorkerLease) Release() error {

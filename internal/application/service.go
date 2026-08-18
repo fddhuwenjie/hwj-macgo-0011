@@ -255,7 +255,7 @@ func (s *Service) CompleteExecution(ctx context.Context, attemptID string, succe
 	if err != nil {
 		return err
 	}
-	if lease.Status != "active" {
+	if lease.Status != "active" || lease.IsExpired(time.Now()) {
 		return domain.ErrLeaseExpired
 	}
 	if success {
