@@ -181,33 +181,36 @@ func (s *Service) QueueRunPlan(ctx context.Context, planID string) error {
 	return s.expRepo.Update(ctx, exp)
 }
 
-// ClaimNextRunPlan 领取下一个排队的运行计划（工作者调用）
-func (s *Service) ClaimNextRunPlan(ctx context.Context, workerID string) (*domain.RunPlan, *domain.WorkerLease, error) {
+// ClaimNextRunPlan 领取下一个排队的运行计划（工作者调用）。
+// 返回计划、本次创建的执行尝试、租约。调用方据此直接进入 CompleteExecution，
+// 无需再回查尝试列表。
+func (s *Service) ClaimNextRunPlan(ctx context.Context, workerID string) (*domain.RunPlan, *domain.ExecutionAttempt, *domain.WorkerLease, error) {
 	// 获取排队计划列表
 	plans, err := s.planRepo.ListByStatus(ctx, []domain.RunPlanStatus{domain.RunPlanQueued})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if len(plans) == 0 {
-		return nil, nil, domain.ErrNotFound
+		return nil, nil, nil, domain.ErrNotFound
 	}
 	// 简单取第一个
 	plan := plans[0]
 	if err := plan.Claim(); err != nil {
-		return nil, nil, err
-	}
-	if false {
-		if err := plan.StartExecution(); err != nil {
-			return nil, nil, err
-		}
+		return nil, nil, nil, err
 	}
 	// 创建执行尝试
 	attempt := domain.NewExecutionAttempt(util.NewID(), plan.ID, plan.CurrentAttemptNo+1)
 	if err := attempt.Claim(util.NewID()); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := attempt.Start(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	// 计划从 claimed 推进到 executing，与尝试执行状态保持一致。
+	// 否则 CompleteExecution 中的 plan.Succeed/FailWithRetry/FailFinal 会因
+	// 仍处于 claimed 而拒绝迁移，导致尝试与计划状态不一致。
+	if err := plan.StartExecution(); err != nil {
+		return nil, nil, nil, err
 	}
 	// 创建租约
 	lease := domain.NewWorkerLease(util.NewID(), workerID, plan.ID, attempt.ID, 30*time.Second)
@@ -216,30 +219,30 @@ func (s *Service) ClaimNextRunPlan(ctx context.Context, workerID string) (*domai
 	plan.CurrentAttemptNo = attempt.AttemptNo
 	exp, err := s.expRepo.Get(ctx, plan.ExperimentID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if exp.Status == domain.ExperimentQueued {
 		if err := exp.MarkRunning(); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 	// 保存所有（事务）
 	if err := s.attemptRepo.Create(ctx, attempt); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := s.leaseRepo.Create(ctx, lease); err != nil {
 		_ = s.attemptRepo.Delete(ctx, attempt.ID)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := s.planRepo.Update(ctx, plan); err != nil {
 		_ = s.attemptRepo.Delete(ctx, attempt.ID)
 		_ = s.leaseRepo.Delete(ctx, lease.ID)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := s.expRepo.Update(ctx, exp); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return plan, lease, nil
+	return plan, attempt, lease, nil
 }
 
 // CompleteExecution 完成执行：成功或失败

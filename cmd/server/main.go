@@ -12,7 +12,6 @@ import (
 
 	"experiment-trace/internal/application"
 	"experiment-trace/internal/audit"
-	"experiment-trace/internal/domain"
 	"experiment-trace/internal/repository"
 	"experiment-trace/internal/scheduler"
 	"experiment-trace/internal/web"
@@ -132,20 +131,12 @@ func runSelfCheck() error {
 	if err := svc.QueueRunPlan(ctx, plan.ID); err != nil {
 		return err
 	}
-	// 模拟领取并完成
-	_, _, err = svc.ClaimNextRunPlan(ctx, "worker1")
+	// 模拟领取并完成（领取即拿到本次尝试）
+	_, attempt, _, err := svc.ClaimNextRunPlan(ctx, "worker1")
 	if err != nil {
 		return err
 	}
-	// 获取attempt ID
-	attempts, err := svc.AttemptRepo().ListByRunPlan(ctx, plan.ID)
-	if err != nil {
-		return err
-	}
-	if len(attempts) == 0 {
-		return domain.ErrNotFound
-	}
-	if err := svc.CompleteExecution(ctx, attempts[0].ID, true, []byte(`{"out":1}`), ""); err != nil {
+	if err := svc.CompleteExecution(ctx, attempt.ID, true, []byte(`{"out":1}`), ""); err != nil {
 		return err
 	}
 	if _, err := svc.PublishExperiment(ctx, exp.ID, "v1"); err != nil {

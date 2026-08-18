@@ -69,40 +69,31 @@ func (s *Scheduler) workerLoop(id int) {
 }
 
 func (s *Scheduler) processNext(ctx context.Context) error {
-	// 领取下一个任务
-	plan, _, err := s.svc.ClaimNextRunPlan(ctx, s.workerID)
+	// 领取下一个任务，直接拿到本次执行尝试，无需回查尝试列表
+	_, attempt, _, err := s.svc.ClaimNextRunPlan(ctx, s.workerID)
 	if err != nil {
 		return err
 	}
 	// 执行任务（模拟可能失败）
-	attemptID := ""
-	// 从plan中获取当前尝试ID无法直接获取，需要查找最新尝试
-	// 简化：直接执行并立即完成
-	// 根据一定概率模拟成功/失败
-	success := rand.Intn(10) < 0 // 70%成功
+	// rand.Intn(10) 落在 [0,10)，<7 命中概率 70%，与注释一致；
+	// 此前写成 <0 恒为 false，导致所有任务都被当成失败。
+	success := rand.Intn(10) < 7 // 70%成功
 	var outputContent json.RawMessage
 	if success {
 		outputContent = json.RawMessage(`{"result":"success"}`)
 	} else {
 		outputContent = nil
 	}
-	// 找到attempt ID
-	attempts, err := s.svc.AttemptRepo().ListByRunPlan(ctx, plan.ID)
-	if err != nil {
-		return err
-	}
-	if len(attempts) == 0 {
-		return domain.ErrNotFound
-	}
-	attemptID = attempts[len(attempts)-1].ID
 	// 应用超时和取消
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(time.Duration(rand.Intn(500)) * time.Millisecond):
 	}
-	// 完成执行
-	return s.svc.CompleteExecution(ctx, attemptID, success, outputContent, "simulated failure")
+	// 完成执行：将本次调度结果（成功/失败）传递给应用层，由其推进
+	// 尝试与计划状态。计划已在 ClaimNextRunPlan 中推进到 executing，
+	// 因此成功走 Succeed、失败走 FailWithRetry/FailFinal 均可正常迁移。
+	return s.svc.CompleteExecution(ctx, attempt.ID, success, outputContent, "simulated failure")
 }
 
 func randString(n int) string {

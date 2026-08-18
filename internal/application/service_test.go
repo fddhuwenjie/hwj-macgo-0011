@@ -65,15 +65,20 @@ func TestCreateFreezeRunPublishChain(t *testing.T) {
 	}
 
 	// 领取
-	_, lease, err := svc.ClaimNextRunPlan(ctx, "worker1")
+	_, attempt, lease, err := svc.ClaimNextRunPlan(ctx, "worker1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if lease.Status != "active" {
 		t.Fatalf("expected active lease")
 	}
+	// 领取后计划应推进到 executing，而非停留在 claimed
+	claimedPlan, _ := svc.PlanRepo().Get(ctx, plan.ID)
+	if claimedPlan.Status != domain.RunPlanExecuting {
+		t.Fatalf("expected plan executing after claim, got %s", claimedPlan.Status)
+	}
 
-	// 完成成功
+	// 验证尝试已创建
 	attempts, err := svc.AttemptRepo().ListByRunPlan(ctx, plan.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +86,7 @@ func TestCreateFreezeRunPublishChain(t *testing.T) {
 	if len(attempts) != 1 {
 		t.Fatalf("expected 1 attempt, got %d", len(attempts))
 	}
-	if err := svc.CompleteExecution(ctx, attempts[0].ID, true, []byte(`{"out":3}`), ""); err != nil {
+	if err := svc.CompleteExecution(ctx, attempt.ID, true, []byte(`{"out":3}`), ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -114,9 +119,7 @@ func TestFailureRetryAndRecovery(t *testing.T) {
 	exp, _ := svc.CreateExperiment(ctx, "test", "desc", []byte(`{}`), []byte(`{}`), nil)
 	plan, _ := svc.FreezeExperiment(ctx, exp.ID)
 	_ = svc.QueueRunPlan(ctx, plan.ID)
-	_, _, _ = svc.ClaimNextRunPlan(ctx, "worker1")
-	attempts, _ := svc.AttemptRepo().ListByRunPlan(ctx, plan.ID)
-	attempt := attempts[0]
+	_, attempt, _, _ := svc.ClaimNextRunPlan(ctx, "worker1")
 	// 失败第一次
 	if err := svc.CompleteExecution(ctx, attempt.ID, false, nil, "error1"); err != nil {
 		t.Fatal(err)
@@ -127,9 +130,12 @@ func TestFailureRetryAndRecovery(t *testing.T) {
 	}
 	// 再次排队
 	_ = svc.QueueRunPlan(ctx, plan.ID)
-	_, _, _ = svc.ClaimNextRunPlan(ctx, "worker1")
-	attempts, _ = svc.AttemptRepo().ListByRunPlan(ctx, plan.ID)
-	attempt = attempts[len(attempts)-1]
+	_, attempt, _, _ = svc.ClaimNextRunPlan(ctx, "worker1")
+	// 重试应创建第二个尝试
+	attempts, _ := svc.AttemptRepo().ListByRunPlan(ctx, plan.ID)
+	if len(attempts) != 2 {
+		t.Fatalf("expected 2 attempts after retry, got %d", len(attempts))
+	}
 	// 成功
 	if err := svc.CompleteExecution(ctx, attempt.ID, true, []byte(`{"out":1}`), ""); err != nil {
 		t.Fatal(err)
