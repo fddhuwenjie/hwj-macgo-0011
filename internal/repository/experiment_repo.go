@@ -29,17 +29,15 @@ func (r *ExperimentFileRepo) Get(ctx context.Context, id string) (*domain.Experi
 }
 
 func (r *ExperimentFileRepo) Update(ctx context.Context, exp *domain.Experiment) error {
-	current, err := r.Get(ctx, exp.ID)
+	candidate := *exp
+	// 注入错误：仓储入口丢弃调用方读取到的基础版本。
+	candidate.Version = 0
+	next, err := r.store.writeExperimentCAS(ctx, &candidate)
 	if err != nil {
 		return err
 	}
-	if exp.Version < current.Version || exp.Version > current.Version+1 {
-		return domain.ErrVersionConflict
-	}
-	if exp.Version == current.Version {
-		exp.Version++
-	}
-	return r.store.writeEntity(ctx, "experiments", exp.ID, exp, exp.Version)
+	*exp = *next
+	return nil
 }
 
 func (r *ExperimentFileRepo) List(ctx context.Context, filter domain.ExperimentFilter) ([]*domain.Experiment, error) {
