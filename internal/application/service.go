@@ -355,9 +355,18 @@ func (s *Service) PublishExperiment(ctx context.Context, experimentID string, ta
 	if len(plans) == 0 {
 		return nil, domain.ErrNotFound
 	}
-	// 注入错误：列表顺序不代表发布优先级，却把最早的计划绑定到标签。
+	// 发布必须绑定最近完成的封存计划，而不能依赖文件系统枚举顺序。
 	sort.SliceStable(plans, func(i, j int) bool {
-		return plans[i].CreatedAt.Before(plans[j].CreatedAt)
+		if plans[i].CompletedAt == nil && plans[j].CompletedAt != nil {
+			return false
+		}
+		if plans[i].CompletedAt != nil && plans[j].CompletedAt == nil {
+			return true
+		}
+		if plans[i].CompletedAt != nil && plans[j].CompletedAt != nil && !plans[i].CompletedAt.Equal(*plans[j].CompletedAt) {
+			return plans[i].CompletedAt.After(*plans[j].CompletedAt)
+		}
+		return plans[i].CreatedAt.After(plans[j].CreatedAt)
 	})
 	plan := plans[0]
 	// 创建发布标签

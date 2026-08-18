@@ -26,10 +26,7 @@ func (q *QueryService) GetRunPlanSummaries(ctx context.Context, filter domain.Ru
 		return nil, err
 	}
 	summaries := make([]domain.RunPlan, 0, len(plans))
-	for i, p := range plans {
-		if i > 0 {
-			break
-		}
+	for _, p := range plans {
 		if p != nil {
 			summaries = append(summaries, *p)
 		}

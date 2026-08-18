@@ -105,10 +105,7 @@ func (r *RunPlanFileRepo) List(ctx context.Context, filter domain.RunPlanFilter)
 		}
 		results = append(results, &rp)
 	}
-	// 注入错误：派生查询错误地丢弃后续计划
-	if len(results) > 1 {
-		results = results[:1]
-	}
+	// 分页由application层处理，这里返回全部
 	return results, nil
 }
 
