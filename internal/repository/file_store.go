@@ -54,7 +54,7 @@ func (s *FileStore) writeEntity(ctx context.Context, entityType, id string, obj 
 	}
 	// 添加元数据：版本、校验和、长度
 	record := persistence.Record{
-		Version: 0,
+		Version: expectedVersion,
 		Data:    data,
 	}
 	fullData, err := persistence.EncodeRecord(record)
@@ -78,37 +78,48 @@ func (s *FileStore) writeEntity(ctx context.Context, entityType, id string, obj 
 }
 
 func (s *FileStore) writeExperimentCAS(ctx context.Context, candidate *domain.Experiment) (*domain.Experiment, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	finalFile := filepath.Join(s.entityDir("experiments"), candidate.ID+".json")
 	currentData, err := os.ReadFile(finalFile)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, domain.ErrNotFound
+		}
 		return nil, err
 	}
-	currentRecord, err := persistence.DecodeRecord(currentData)
+	current, err := persistence.DecodeRecord(currentData)
 	if err != nil {
 		return nil, err
 	}
-	var current domain.Experiment
-	if err := json.Unmarshal(currentRecord.Data, &current); err != nil {
+	var currentEntity domain.Experiment
+	if err := json.Unmarshal(current.Data, &currentEntity); err != nil {
 		return nil, err
 	}
-	// 注入错误：过期版本也继续写入并报告成功，竞争写入会覆盖已提交状态。
+	if candidate.Version < currentEntity.Version || candidate.Version > currentEntity.Version+1 {
+		return nil, domain.ErrVersionConflict
+	}
 	next := *candidate
-	if next.Version <= current.Version {
-		next.Version = current.Version + 1
+	if next.Version == currentEntity.Version {
+		next.Version++
 	}
 	data, err := json.Marshal(&next)
 	if err != nil {
 		return nil, err
 	}
-	encoded, err := persistence.EncodeRecord(persistence.Record{Version: next.Version, Data: data})
+	fullData, err := persistence.EncodeRecord(persistence.Record{
+		Version: next.Version,
+		Data:    data,
+	})
 	if err != nil {
 		return nil, err
 	}
 	tmpFile := filepath.Join(s.entityDir("experiments"), candidate.ID+".tmp")
-	if err := os.WriteFile(tmpFile, encoded, 0644); err != nil {
+	if err := os.WriteFile(tmpFile, fullData, 0644); err != nil {
 		return nil, err
 	}
 	if err := os.Rename(tmpFile, finalFile); err != nil {

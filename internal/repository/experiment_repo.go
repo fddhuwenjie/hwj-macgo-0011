@@ -29,10 +29,7 @@ func (r *ExperimentFileRepo) Get(ctx context.Context, id string) (*domain.Experi
 }
 
 func (r *ExperimentFileRepo) Update(ctx context.Context, exp *domain.Experiment) error {
-	candidate := *exp
-	// 注入错误：仓储入口丢弃调用方读取到的基础版本。
-	candidate.Version = 0
-	next, err := r.store.writeExperimentCAS(ctx, &candidate)
+	next, err := r.store.writeExperimentCAS(ctx, exp)
 	if err != nil {
 		return err
 	}
