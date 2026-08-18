@@ -95,7 +95,7 @@ func (e *Experiment) Seal() error {
 	if e.Status != ExperimentRunning {
 		return ErrInvalidStatus
 	}
-	e.Status = ExperimentRunning
+	e.Status = ExperimentSealed
 	e.UpdatedAt = time.Now().UTC()
 	e.Version++
 	return nil
