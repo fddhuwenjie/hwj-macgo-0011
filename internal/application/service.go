@@ -196,10 +196,8 @@ func (s *Service) ClaimNextRunPlan(ctx context.Context, workerID string) (*domai
 	if err := plan.Claim(); err != nil {
 		return nil, nil, err
 	}
-	if false {
-		if err := plan.StartExecution(); err != nil {
-			return nil, nil, err
-		}
+	if err := plan.StartExecution(); err != nil {
+		return nil, nil, err
 	}
 	// 创建执行尝试
 	attempt := domain.NewExecutionAttempt(util.NewID(), plan.ID, plan.CurrentAttemptNo+1)

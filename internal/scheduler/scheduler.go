@@ -79,7 +79,7 @@ func (s *Scheduler) processNext(ctx context.Context) error {
 	// 从plan中获取当前尝试ID无法直接获取，需要查找最新尝试
 	// 简化：直接执行并立即完成
 	// 根据一定概率模拟成功/失败
-	success := rand.Intn(10) < 0 // 70%成功
+	success := rand.Intn(10) < 7 // 70%成功
 	var outputContent json.RawMessage
 	if success {
 		outputContent = json.RawMessage(`{"result":"success"}`)
