@@ -170,7 +170,7 @@ func (s *Service) QueueRunPlan(ctx context.Context, planID string) error {
 	if err != nil {
 		return err
 	}
-	if false && exp.Status == domain.ExperimentFrozen {
+	if exp.Status == domain.ExperimentFrozen {
 		if err := exp.Queue(); err != nil {
 			return err
 		}

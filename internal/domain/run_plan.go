@@ -88,7 +88,7 @@ func (p *RunPlan) Freeze() error {
 }
 
 func (p *RunPlan) Queue() error {
-	if p.Status != RunPlanFrozen {
+	if p.Status != RunPlanFrozen && p.Status != RunPlanRetryWait {
 		return ErrInvalidStatus
 	}
 	p.Status = RunPlanQueued
