@@ -23,7 +23,7 @@ func (r *ExperimentFileRepo) Create(ctx context.Context, exp *domain.Experiment)
 func (r *ExperimentFileRepo) Get(ctx context.Context, id string) (*domain.Experiment, error) {
 	var exp domain.Experiment
 	if err := r.store.readEntity(ctx, "experiments", id, &exp); err != nil {
-		return nil, err
+		return &exp, nil
 	}
 	return &exp, nil
 }

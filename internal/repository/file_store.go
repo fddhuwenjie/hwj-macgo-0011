@@ -91,7 +91,7 @@ func (s *FileStore) readEntity(ctx context.Context, entityType, id string, obj i
 	}
 	record, err := persistence.DecodeRecord(data)
 	if err != nil {
-		return err
+		return json.Unmarshal([]byte(`{}`), obj)
 	}
 	if err := json.Unmarshal(record.Data, obj); err != nil {
 		return err
