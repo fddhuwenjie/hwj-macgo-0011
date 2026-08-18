@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -19,6 +20,86 @@ type Server struct {
 // NewServer 创建服务器
 func NewServer(svc *application.Service) *Server {
 	return &Server{svc: svc}
+}
+
+// apiErrorBody 统一错误响应体内部结构。
+type apiErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// apiErrorPayload 统一错误响应体：{"error":{"code":..., "message":...}}
+type apiErrorPayload struct {
+	Error apiErrorBody `json:"error"`
+}
+
+// writeJSON 以 application/json 写出成功响应。统一所有成功响应的内容类型与编码方式。
+func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeError 以统一 JSON 错误体写出错误响应。
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, apiErrorPayload{Error: apiErrorBody{Code: code, Message: message}})
+}
+
+// statusAndCodeFor 将领域/服务错误映射为 HTTP 状态码与机器可读的错误码。
+// 客户端可据此区分“请求有问题”“资源不存在”“状态冲突”等，而不是一律当作成功或 500。
+func statusAndCodeFor(err error) (int, string) {
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		return http.StatusNotFound, "not_found"
+	case errors.Is(err, domain.ErrInvalidParameter):
+		return http.StatusBadRequest, "invalid_parameter"
+	case errors.Is(err, domain.ErrAlreadyExists),
+		errors.Is(err, domain.ErrVersionConflict),
+		errors.Is(err, domain.ErrIdempotencyConflict),
+		errors.Is(err, domain.ErrInvalidStatus),
+		errors.Is(err, domain.ErrImmutableViolation),
+		errors.Is(err, domain.ErrLeaseExpired),
+		errors.Is(err, domain.ErrLeaseGeneration),
+		errors.Is(err, domain.ErrLineageCycle),
+		errors.Is(err, domain.ErrTagDrift):
+		return http.StatusConflict, errorCodeFor(err)
+	case errors.Is(err, domain.ErrBudgetExceeded):
+		return http.StatusTooManyRequests, "budget_exceeded"
+	default:
+		return http.StatusInternalServerError, "internal_error"
+	}
+}
+
+// errorCodeFor 返回冲突类错误的机器可读错误码（仅在状态码确定为 409 时调用）。
+func errorCodeFor(err error) string {
+	switch {
+	case errors.Is(err, domain.ErrAlreadyExists):
+		return "already_exists"
+	case errors.Is(err, domain.ErrVersionConflict):
+		return "version_conflict"
+	case errors.Is(err, domain.ErrIdempotencyConflict):
+		return "idempotency_conflict"
+	case errors.Is(err, domain.ErrInvalidStatus):
+		return "invalid_status"
+	case errors.Is(err, domain.ErrImmutableViolation):
+		return "immutable_violation"
+	case errors.Is(err, domain.ErrLeaseExpired):
+		return "lease_expired"
+	case errors.Is(err, domain.ErrLeaseGeneration):
+		return "lease_generation_mismatch"
+	case errors.Is(err, domain.ErrLineageCycle):
+		return "lineage_cycle"
+	case errors.Is(err, domain.ErrTagDrift):
+		return "tag_drift"
+	default:
+		return "conflict"
+	}
+}
+
+// writeServiceError 将服务层返回的错误映射为统一的错误响应。
+func writeServiceError(w http.ResponseWriter, err error) {
+	status, code := statusAndCodeFor(err)
+	writeError(w, status, code, err.Error())
 }
 
 // Handler 返回HTTP处理器
@@ -54,26 +135,26 @@ func (s *Server) handleExperiments(w http.ResponseWriter, r *http.Request) {
 			Input       json.RawMessage `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusOK)
+			// 请求体不是合法 JSON：必须返回客户端错误（4xx），否则客户端会按 200 当作已创建。
+			writeError(w, http.StatusBadRequest, "malformed_json", "request body is not valid JSON: "+err.Error())
 			return
 		}
 		exp, err := s.svc.CreateExperiment(r.Context(), req.Name, req.Description, req.ParamDef, req.Input, nil)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			// 创建失败时服务层已回滚，持久化结果为空；这里返回错误状态码与之保持一致。
+			writeServiceError(w, err)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(exp)
+		writeJSON(w, http.StatusOK, exp)
 	case http.MethodGet:
 		exps, err := s.svc.ExpRepo().List(r.Context(), domain.ExperimentFilter{})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeServiceError(w, err)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(exps)
+		writeJSON(w, http.StatusOK, exps)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
 }
 
@@ -84,38 +165,38 @@ func (s *Server) handleExperimentByID(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		exp, err := s.svc.ExpRepo().Get(r.Context(), id)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
+			writeServiceError(w, err)
 			return
 		}
-		json.NewEncoder(w).Encode(exp)
+		writeJSON(w, http.StatusOK, exp)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
 }
 
 func (s *Server) handleFreeze(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	var req struct {
 		ExperimentID string `json:"experiment_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "malformed_json", "request body is not valid JSON: "+err.Error())
 		return
 	}
 	plan, err := s.svc.FreezeExperiment(r.Context(), req.ExperimentID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServiceError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(plan)
+	writeJSON(w, http.StatusOK, plan)
 }
 
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	var req struct {
@@ -123,20 +204,20 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		TagName      string `json:"tag_name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "malformed_json", "request body is not valid JSON: "+err.Error())
 		return
 	}
 	tag, err := s.svc.PublishExperiment(r.Context(), req.ExperimentID, req.TagName)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServiceError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(tag)
+	writeJSON(w, http.StatusOK, tag)
 }
 
 func (s *Server) handleRunPlans(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	filter := domain.RunPlanFilter{
@@ -155,10 +236,10 @@ func (s *Server) handleRunPlans(w http.ResponseWriter, r *http.Request) {
 	}
 	summaries, err := s.svc.QueryRunPlans(r.Context(), filter)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServiceError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(summaries)
+	writeJSON(w, http.StatusOK, summaries)
 }
 
 // expRepo accessor
@@ -205,16 +286,29 @@ async function api(url, method='GET', body) {
   const opt = {method, headers: {'Content-Type': 'application/json'}};
   if (body) opt.body = JSON.stringify(body);
   const res = await fetch(url, opt);
+  // 非 2xx 一律视为失败：解析统一错误体并抛出，避免客户端把失败响应当成已创建/已成功。
+  if (!res.ok) {
+    let msg = res.status + ' ' + res.statusText;
+    try {
+      const j = await res.json();
+      if (j && j.error && j.error.message) msg = j.error.message;
+    } catch (_) {}
+    throw new Error(msg);
+  }
   return res.json();
 }
 async function createExperiment() {
-  const name = document.getElementById('expName').value;
-  const description = document.getElementById('expDesc').value;
-  const param_def = JSON.parse(document.getElementById('expParam').value || '{}');
-  const input = JSON.parse(document.getElementById('expInput').value || '{}');
-  const exp = await api('/api/experiments', 'POST', {name, description, param_def, input});
-  alert('创建成功:' + exp.id);
-  loadExperiments();
+  try {
+    const name = document.getElementById('expName').value;
+    const description = document.getElementById('expDesc').value;
+    const param_def = JSON.parse(document.getElementById('expParam').value || '{}');
+    const input = JSON.parse(document.getElementById('expInput').value || '{}');
+    const exp = await api('/api/experiments', 'POST', {name, description, param_def, input});
+    alert('创建成功:' + exp.id);
+    loadExperiments();
+  } catch (e) {
+    alert('创建失败:' + e.message);
+  }
 }
 async function loadExperiments() {
   const exps = await api('/api/experiments');
@@ -228,24 +322,35 @@ async function loadExperiments() {
   }
 }
 async function freeze(id) {
-  await api('/api/experiments/freeze', 'POST', {experiment_id: id});
-  loadExperiments();
+  try {
+    await api('/api/experiments/freeze', 'POST', {experiment_id: id});
+    loadExperiments();
+  } catch (e) {
+    alert('冻结失败:' + e.message);
+  }
 }
 async function publish(id) {
   const tag = prompt('输入发布标签');
-  if (tag) {
+  if (!tag) return;
+  try {
     await api('/api/experiments/publish', 'POST', {experiment_id: id, tag_name: tag});
     loadExperiments();
+  } catch (e) {
+    alert('发布失败:' + e.message);
   }
 }
 async function loadPlans() {
-  const plans = await api('/api/runplans');
-  const table = document.getElementById('planTable');
-  table.innerHTML = '<tr><th>Plan ID</th><th>Experiment ID</th><th>状态</th><th>重试次数</th><th>耗时</th></tr>';
-  for (const p of plans) {
-    const row = table.insertRow();
+  try {
+    const plans = await api('/api/runplans');
+    const table = document.getElementById('planTable');
+    table.innerHTML = '<tr><th>Plan ID</th><th>Experiment ID</th><th>状态</th><th>重试次数</th><th>耗时</th></tr>';
+    for (const p of plans) {
+      const row = table.insertRow();
 	    row.innerHTML = '<td>' + p.run_plan_id + '</td><td>' + p.experiment_id + '</td><td>' +
 	      p.status + '</td><td>' + p.retry_count + '</td><td>' + p.duration + '</td>';
+    }
+  } catch (e) {
+    console.error('加载运行计划失败:', e.message);
   }
 }
 window.onload = () => { loadExperiments(); loadPlans(); setInterval(loadPlans, 3000); };

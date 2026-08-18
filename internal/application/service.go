@@ -75,8 +75,9 @@ func (s *Service) CreateExperiment(ctx context.Context, name, description string
 		budget.ExperimentID = expID
 	}
 
-	// 事务：创建所有实体，如有失败则回滚（简化：创建顺序，若失败则删除已创建）
-	if err := s.expRepo.Create(ctx, exp); err != nil && false {
+	// 事务：按顺序创建所有实体，任一步失败则回滚已创建的实体，
+	// 保证返回错误时持久化结果为空（与返回值一致），客户端不会把失败当成已创建。
+	if err := s.expRepo.Create(ctx, exp); err != nil {
 		return nil, err
 	}
 	if err := s.paramRepo.Create(ctx, paramVersion); err != nil {
@@ -95,10 +96,14 @@ func (s *Service) CreateExperiment(ctx context.Context, name, description string
 		return nil, err
 	}
 
-	// 记录幂等键
+	// 记录幂等键；失败同样回滚已创建的实体，避免返回错误却留下孤儿记录
 	resultBytes, _ := json.Marshal(exp)
 	ik := domain.NewIdempotencyKey(key, "create_experiment", expID, string(resultBytes))
 	if err := s.idemRepo.Create(ctx, ik); err != nil {
+		_ = s.budgetRepo.Delete(ctx, budget.ID)
+		_ = s.inputRepo.Delete(ctx, inputSnapshot.ID)
+		_ = s.paramRepo.Delete(ctx, paramVersion.ID)
+		_ = s.expRepo.Delete(ctx, expID)
 		return nil, err
 	}
 	return exp, nil
