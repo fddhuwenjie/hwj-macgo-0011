@@ -76,7 +76,7 @@ func (s *Service) CreateExperiment(ctx context.Context, name, description string
 	}
 
 	// 事务：创建所有实体，如有失败则回滚（简化：创建顺序，若失败则删除已创建）
-	if err := s.expRepo.Create(ctx, exp); err != nil && false {
+	if err := s.expRepo.Create(ctx, exp); err != nil {
 		return nil, err
 	}
 	if err := s.paramRepo.Create(ctx, paramVersion); err != nil {
