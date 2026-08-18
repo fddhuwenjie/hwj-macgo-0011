@@ -64,6 +64,7 @@ type OutputArtifactRepository interface {
 	Get(ctx context.Context, id string) (*domain.OutputArtifact, error)
 	Update(ctx context.Context, oa *domain.OutputArtifact) error
 	GetByAttempt(ctx context.Context, attemptID string) (*domain.OutputArtifact, error)
+	Delete(ctx context.Context, id string) error
 }
 
 // LineageEdgeRepository 谱系边仓库

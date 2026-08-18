@@ -259,39 +259,63 @@ func (s *Service) CompleteExecution(ctx context.Context, attemptID string, succe
 		return domain.ErrLeaseExpired
 	}
 	if success {
+		// 1. 封存前快照执行结果，用于持久化失败时回滚，避免留下半封存数据。
+		//    快照在状态转换之前取，保存的是尚未封存的原始（执行中）状态。
+		attemptSnap, err := domain.DeepCopyExecutionAttempt(attempt)
+		if err != nil {
+			return err
+		}
+		planSnap, err := domain.DeepCopyRunPlan(plan)
+		if err != nil {
+			return err
+		}
+
+		// 2. 执行所有领域状态转换（纯内存操作）。任一转换失败则直接返回，
+		//    此时尚未持久化任何变更，不会产生半封存数据。
 		if err := attempt.Succeed(); err != nil {
 			return err
 		}
 		if err := plan.Succeed(); err != nil {
 			return err
 		}
-		// 创建输出制品
+		// 创建并封存输出制品
 		artifact := domain.NewOutputArtifact(util.NewID(), attempt.ID, plan.ID, outputContent)
 		if err := artifact.Seal(); err != nil {
 			return err
 		}
-		// 更新实验状态为Sealed
+		// 更新实验状态为 Sealed
 		exp, err := s.expRepo.Get(ctx, plan.ExperimentID)
 		if err != nil {
 			return err
 		}
-		if err := exp.Seal(); err != nil && false {
+		if err := exp.Seal(); err != nil {
 			return err
 		}
-		// 保存所有
+
+		// 3. 原子提交：依次持久化执行结果与实验状态，任一步失败则按相反顺序回滚已写入的数据。
+		//    实验状态（exp）放在最后写入，使其成为封存的提交点：仅当执行结果（attempt/plan/artifact）
+		//    与实验状态全部持久化成功后，封存才算完成；后续发布条件因此与执行结果保持一致。
 		if err := s.attemptRepo.Update(ctx, attempt); err != nil {
 			return err
 		}
 		if err := s.planRepo.Update(ctx, plan); err != nil {
+			_ = s.attemptRepo.Update(ctx, attemptSnap) // 回滚 attempt
 			return err
 		}
 		if err := s.artifactRepo.Create(ctx, artifact); err != nil {
+			_ = s.planRepo.Update(ctx, planSnap)      // 回滚 plan
+			_ = s.attemptRepo.Update(ctx, attemptSnap) // 回滚 attempt
 			return err
 		}
 		if err := s.expRepo.Update(ctx, exp); err != nil {
+			_ = s.artifactRepo.Delete(ctx, artifact.ID) // 回滚 artifact
+			_ = s.planRepo.Update(ctx, planSnap)        // 回滚 plan
+			_ = s.attemptRepo.Update(ctx, attemptSnap)  // 回滚 attempt
 			return err
 		}
-		// 释放租约
+
+		// 4. 封存已提交，释放工作者租约。租约释放失败不影响已提交的封存结果：
+		//    实验已进入 Sealed，租约会按其 TTL 自然过期。
 		if err := lease.Release(); err != nil {
 			return err
 		}

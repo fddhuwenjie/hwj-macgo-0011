@@ -90,12 +90,13 @@ func (e *Experiment) MarkRunning() error {
 	return nil
 }
 
-// Seal 封存实验，表示成功结果已确定
+// Seal 封存实验，表示成功结果已确定。
+// 仅运行中的实验可封存；封存后进入 ExperimentSealed，作为后续发布的必要前置条件。
 func (e *Experiment) Seal() error {
 	if e.Status != ExperimentRunning {
 		return ErrInvalidStatus
 	}
-	e.Status = ExperimentRunning
+	e.Status = ExperimentSealed
 	e.UpdatedAt = time.Now().UTC()
 	e.Version++
 	return nil

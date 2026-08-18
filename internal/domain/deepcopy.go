@@ -30,4 +30,17 @@ func DeepCopyRunPlan(src *RunPlan) (*RunPlan, error) {
 	return &dst, nil
 }
 
+// DeepCopyExecutionAttempt 深拷贝执行尝试
+func DeepCopyExecutionAttempt(src *ExecutionAttempt) (*ExecutionAttempt, error) {
+	data, err := json.Marshal(src)
+	if err != nil {
+		return nil, err
+	}
+	var dst ExecutionAttempt
+	if err := json.Unmarshal(data, &dst); err != nil {
+		return nil, err
+	}
+	return &dst, nil
+}
+
 // 其他对象深拷贝可类似实现，为简洁略去，实际可复用通用方法
