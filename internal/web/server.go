@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -19,6 +20,33 @@ type Server struct {
 // NewServer 创建服务器
 func NewServer(svc *application.Service) *Server {
 	return &Server{svc: svc}
+}
+
+// statusForError 将领域错误映射为合适的 HTTP 状态码，使并发冲突等以明确语义返回。
+func statusForError(err error) int {
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, domain.ErrVersionConflict),
+		errors.Is(err, domain.ErrAlreadyExists),
+		errors.Is(err, domain.ErrIdempotencyConflict):
+		return http.StatusConflict
+	case errors.Is(err, domain.ErrInvalidStatus),
+		errors.Is(err, domain.ErrInvalidParameter),
+		errors.Is(err, domain.ErrImmutableViolation),
+		errors.Is(err, domain.ErrLeaseExpired),
+		errors.Is(err, domain.ErrLeaseGeneration):
+		return http.StatusBadRequest
+	case errors.Is(err, domain.ErrBudgetExceeded):
+		return http.StatusTooManyRequests
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// writeAPIError 以状态码写出错误，使调用方（如并发写入的请求）得到明确的冲突等语义。
+func (s *Server) writeAPIError(w http.ResponseWriter, err error) {
+	http.Error(w, err.Error(), statusForError(err))
 }
 
 // Handler 返回HTTP处理器
@@ -107,7 +135,7 @@ func (s *Server) handleFreeze(w http.ResponseWriter, r *http.Request) {
 	}
 	plan, err := s.svc.FreezeExperiment(r.Context(), req.ExperimentID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.writeAPIError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(plan)
@@ -128,7 +156,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 	tag, err := s.svc.PublishExperiment(r.Context(), req.ExperimentID, req.TagName)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.writeAPIError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(tag)

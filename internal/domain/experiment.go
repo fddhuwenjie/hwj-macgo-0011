@@ -19,6 +19,10 @@ const (
 )
 
 // Experiment 实验聚合根
+//
+// Version 为乐观锁基础版本（代次）：调用方读取实体后以该 Version 作为基础提交，
+// 仓储在 CAS 命中时递增为 current.Version+1 落盘。因此领域状态迁移方法不自行
+// 递增 Version，否则会破坏“基础版本”语义并让并发写入绕过冲突检测。
 type Experiment struct {
 	ID                     string            `json:"id"`
 	Name                   string            `json:"name"`
@@ -64,7 +68,6 @@ func (e *Experiment) Freeze(paramVersionID, inputSnapshotID string) error {
 	e.CurrentInputSnapshotID = inputSnapshotID
 	e.Status = ExperimentFrozen
 	e.UpdatedAt = time.Now().UTC()
-	e.Version++
 	return nil
 }
 
@@ -75,7 +78,6 @@ func (e *Experiment) Queue() error {
 	}
 	e.Status = ExperimentQueued
 	e.UpdatedAt = time.Now().UTC()
-	e.Version++
 	return nil
 }
 
@@ -86,7 +88,6 @@ func (e *Experiment) MarkRunning() error {
 	}
 	e.Status = ExperimentRunning
 	e.UpdatedAt = time.Now().UTC()
-	e.Version++
 	return nil
 }
 
@@ -97,7 +98,6 @@ func (e *Experiment) Seal() error {
 	}
 	e.Status = ExperimentSealed
 	e.UpdatedAt = time.Now().UTC()
-	e.Version++
 	return nil
 }
 
@@ -108,7 +108,6 @@ func (e *Experiment) Publish() error {
 	}
 	e.Status = ExperimentPublished
 	e.UpdatedAt = time.Now().UTC()
-	e.Version++
 	return nil
 }
 
@@ -119,7 +118,6 @@ func (e *Experiment) MarkFailed() error {
 	}
 	e.Status = ExperimentFailed
 	e.UpdatedAt = time.Now().UTC()
-	e.Version++
 	return nil
 }
 

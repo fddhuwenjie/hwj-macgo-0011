@@ -45,9 +45,8 @@ func (s *FileStore) writeEntity(ctx context.Context, entityType, id string, obj 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 检查版本（乐观锁）
-	// 注意：这里简化，需要对象有Version字段，但反射获取不方便，我们依赖上层在更新前检查版本
-	// 这里假设调用者已检查版本，我们只做原子写入
+	// writeEntity 不执行乐观锁校验，仅做原子持久化写入；
+	// 实体的乐观并发控制由 writeExperimentCAS 负责。
 	data, err := json.Marshal(obj)
 	if err != nil {
 		return err
@@ -61,22 +60,15 @@ func (s *FileStore) writeEntity(ctx context.Context, entityType, id string, obj 
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.entityDir(entityType), 0755); err != nil {
-		return err
-	}
-	// 原子写入：先写临时文件再重命名
-	tmpFile := filepath.Join(s.entityDir(entityType), id+".tmp")
 	finalFile := filepath.Join(s.entityDir(entityType), id+".json")
-	if err := os.WriteFile(tmpFile, fullData, 0644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpFile, finalFile); err != nil {
-		os.Remove(tmpFile)
-		return err
-	}
-	return nil
+	return persistence.AtomicWriteFile(finalFile, fullData, 0644)
 }
 
+// writeExperimentCAS 以乐观锁（compare-and-swap）原子提交实验更新。
+// candidate.Version 必须等于当前盘上版本（调用方读取到的基础版本/代次）；
+// 命中则写入 current.Version+1，否则返回 ErrVersionConflict——同一代并发写入
+// 中仅一个成功，其余得到明确冲突。写入经 AtomicWriteFile 落盘并 fsync，重启后
+// 仍保留唯一提交结果。
 func (s *FileStore) writeExperimentCAS(ctx context.Context, candidate *domain.Experiment) (*domain.Experiment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -84,6 +76,9 @@ func (s *FileStore) writeExperimentCAS(ctx context.Context, candidate *domain.Ex
 	finalFile := filepath.Join(s.entityDir("experiments"), candidate.ID+".json")
 	currentData, err := os.ReadFile(finalFile)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, domain.ErrNotFound
+		}
 		return nil, err
 	}
 	currentRecord, err := persistence.DecodeRecord(currentData)
@@ -94,11 +89,12 @@ func (s *FileStore) writeExperimentCAS(ctx context.Context, candidate *domain.Ex
 	if err := json.Unmarshal(currentRecord.Data, &current); err != nil {
 		return nil, err
 	}
-	// 注入错误：过期版本也继续写入并报告成功，竞争写入会覆盖已提交状态。
-	next := *candidate
-	if next.Version <= current.Version {
-		next.Version = current.Version + 1
+	// 乐观锁：基础版本不匹配即并发冲突，拒绝写入。
+	if candidate.Version != current.Version {
+		return nil, domain.ErrVersionConflict
 	}
+	next := *candidate
+	next.Version = current.Version + 1
 	data, err := json.Marshal(&next)
 	if err != nil {
 		return nil, err
@@ -107,12 +103,7 @@ func (s *FileStore) writeExperimentCAS(ctx context.Context, candidate *domain.Ex
 	if err != nil {
 		return nil, err
 	}
-	tmpFile := filepath.Join(s.entityDir("experiments"), candidate.ID+".tmp")
-	if err := os.WriteFile(tmpFile, encoded, 0644); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tmpFile, finalFile); err != nil {
-		_ = os.Remove(tmpFile)
+	if err := persistence.AtomicWriteFile(finalFile, encoded, 0644); err != nil {
 		return nil, err
 	}
 	return &next, nil

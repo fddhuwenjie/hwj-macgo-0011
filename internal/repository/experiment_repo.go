@@ -28,10 +28,11 @@ func (r *ExperimentFileRepo) Get(ctx context.Context, id string) (*domain.Experi
 	return &exp, nil
 }
 
+// Update 以乐观锁提交实验更新：候选 Version 必须等于调用方读取到的基础版本
+// （代次），仓储在 CAS 命中后将其递增为 current.Version+1 落盘；否则返回
+// ErrVersionConflict，使同一代并发写入中仅一个成功。
 func (r *ExperimentFileRepo) Update(ctx context.Context, exp *domain.Experiment) error {
 	candidate := *exp
-	// 注入错误：仓储入口丢弃调用方读取到的基础版本。
-	candidate.Version = 0
 	next, err := r.store.writeExperimentCAS(ctx, &candidate)
 	if err != nil {
 		return err
