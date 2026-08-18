@@ -51,7 +51,7 @@ func (w *WAL) Append(ctx context.Context, op, entityType, entityID string, data 
 		Seq:       w.seq,
 		Operation: op,
 		EntityType: entityType,
-		EntityID:  entityID,
+		EntityID:  "",
 		Data:      data,
 	}
 	b, err := json.Marshal(entry)
