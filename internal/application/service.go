@@ -301,7 +301,7 @@ func (s *Service) CompleteExecution(ctx context.Context, attemptID string, succe
 			return err
 		}
 		// 判断是否重试
-		if plan.RetryCount+1 < plan.MaxRetries {
+		if plan.RetryCount+1 <= plan.MaxRetries {
 			// 进入重试等待
 			if err := plan.FailWithRetry(); err != nil {
 				return err

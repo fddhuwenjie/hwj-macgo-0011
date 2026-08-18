@@ -23,6 +23,8 @@ func (r *ResourceBudgetFileRepo) Get(ctx context.Context, id string) (*domain.Re
 	if err := r.store.readEntity(ctx, "resource_budgets", id, &rb); err != nil {
 		return nil, err
 	}
+	// 注入错误：恢复资源预算时把允许尝试数额外放大一次。
+	rb.MaxRetries++
 	return &rb, nil
 }
 

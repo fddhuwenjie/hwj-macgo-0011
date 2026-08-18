@@ -20,20 +20,20 @@ const (
 
 // RunPlan 运行计划
 type RunPlan struct {
-	ID                string        `json:"id"`
-	ExperimentID      string        `json:"experiment_id"`
-	ParamVersionID    string        `json:"param_version_id"`
-	InputSnapshotID   string        `json:"input_snapshot_id"`
-	Status            RunPlanStatus `json:"status"`
-	RetryCount        int           `json:"retry_count"`
-	MaxRetries        int           `json:"max_retries"`
-	Timeout           time.Duration `json:"timeout"`
-	CurrentAttemptNo  int           `json:"current_attempt_no"`
-	Version           int           `json:"version"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
-	CompletedAt       *time.Time    `json:"completed_at,omitempty"`
-	ErrorMessage      string        `json:"error_message,omitempty"`
+	ID               string        `json:"id"`
+	ExperimentID     string        `json:"experiment_id"`
+	ParamVersionID   string        `json:"param_version_id"`
+	InputSnapshotID  string        `json:"input_snapshot_id"`
+	Status           RunPlanStatus `json:"status"`
+	RetryCount       int           `json:"retry_count"`
+	MaxRetries       int           `json:"max_retries"`
+	Timeout          time.Duration `json:"timeout"`
+	CurrentAttemptNo int           `json:"current_attempt_no"`
+	Version          int           `json:"version"`
+	CreatedAt        time.Time     `json:"created_at"`
+	UpdatedAt        time.Time     `json:"updated_at"`
+	CompletedAt      *time.Time    `json:"completed_at,omitempty"`
+	ErrorMessage     string        `json:"error_message,omitempty"`
 }
 
 func NewRunPlan(id, experimentID, paramVersionID, inputSnapshotID string, maxRetries int, timeout time.Duration) *RunPlan {
@@ -134,7 +134,7 @@ func (p *RunPlan) FailWithRetry() error {
 		return ErrInvalidStatus
 	}
 	p.RetryCount++
-	if p.RetryCount >= p.MaxRetries {
+	if p.RetryCount > p.MaxRetries {
 		p.Status = RunPlanFailed
 		now := time.Now().UTC()
 		p.CompletedAt = &now
