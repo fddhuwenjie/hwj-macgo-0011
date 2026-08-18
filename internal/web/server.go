@@ -54,7 +54,7 @@ func (s *Server) handleExperiments(w http.ResponseWriter, r *http.Request) {
 			Input       json.RawMessage `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), http.StatusOK)
 			return
 		}
 		exp, err := s.svc.CreateExperiment(r.Context(), req.Name, req.Description, req.ParamDef, req.Input, nil)
